@@ -11,18 +11,29 @@ import pandas as pd
 import pandasql as ps
 from dash.dependencies import Input, Output
 from pandas.api.types import CategoricalDtype
-
-con = psycopg2.connect(
-			host = "db1.cakrcx1k6r20.us-west-2.rds.amazonaws.com",
-			database = "postgres",
-			user = "postgres",
-			password = "postgres")
-
-cur = con.cursor()
+from statsmodels.tsa.stattools import arma_order_select_ic
+import statsmodels as sm
+from statsmodels.tsa.arima_model import ARIMA
+from statsmodels.tsa.arima_model import ARMA
 
 def df_query(col):
-	query = "SELECT " + col + ", SUM(count) AS counts FROM df GROUP BY " + col
-	return query
+    query = "SELECT " + col + ", SUM(count) AS counts FROM df GROUP BY " + col
+    return query
+
+def time_trend(df_full):
+    df_pre = ps.sqldf('SELECT Date, COUNT() AS count FROM df_full GROUP BY Date ORDER BY date',locals())
+    df_pre['date'] = pd.to_datetime(df_pre['date'])
+    df_pre = df_pre.set_index('date').asfreq('D')
+    df_train = df_pre.loc['2017-01-01':'2019-12-31']
+    return df_train
+
+def predict_trend(df_train):
+    diff1 = df_train.diff().dropna()
+    res = arma_order_select_ic(diff1,max_ar=6,max_ma=4,ic='aic')['aic_min_order']
+    arima_mod = ARIMA(df_train, order=(res[0],1,res[1])).fit()
+    # Make a prediction for 3 months
+    prediction = arima_mod.predict('2020-01-01', '2020-03-31')
+    return prediction
 
 colors = {
     'background': '#111111',
@@ -64,183 +75,218 @@ app.layout = html.Div([
 
     dcc.Tabs(id="tabs-navigation", value='graph-collection', children=[
         dcc.Tab(label='General Info', value='general-info'),
-        dcc.Tab(label='Visualize on Map', value='map'),
+        #dcc.Tab(label='Visualize on Map', value='map'),
         dcc.Tab(label='Prediction', value='prediction'),
     ]),
     html.Div(id='graphs')
 ])
 
 #These are the main and secondary pages in tab 1 and 2
-@app.callback(Output('graphs', 'children'),
+@app.callback(
+    Output('graphs', 'children'),
 	[Input('tabs-navigation', 'value'),
-	Input('first-dropdown', 'value')])
+	Input('first-dropdown', 'value')
+    ]
+)
 
 def update_graph(tab, dropdown):
-	city = '"' + str(dropdown) + '"'
-	# if dropdown == '"None"':
-	# 	return
-	df = pd.read_sql("SELECT * FROM " + city, con)
-	df_Districts = ps.sqldf(df_query("district"),locals()).sort_values(by=['counts'])
-	df_Day = ps.sqldf(df_query("dayofweek"),locals())
-	sorter = [ 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-	sorterIndex = dict(zip(sorter,range(len(sorter))))
-	df_Day['Day_id'] = df_Day.index
-	df_Day['Day_id'] = df_Day['Day_id'].map(sorterIndex)
-	df_Day.sort_values('Day_id', inplace=True)
-	df_Month = ps.sqldf(df_query("month"),locals()).sort_values(by=['month'])
-	df_Hour = ps.sqldf(df_query("hour"),locals()).sort_values(by=['hour'])
 
-	city_full = '"' + str(dropdown) + '_full"'
-	dist = df_Districts['district'][1]
-	df_full = pd.read_sql("SELECT date, longitude, latitude FROM " + city_full + ' WHERE pddistrict = "' + dist + '"', con)
-	#df_full['tag'] = np.where(df_full['pddistrict']== dist, 1, 0)
+    con = psycopg2.connect(
+        host = "db1.cakrcx1k6r20.us-west-2.rds.amazonaws.com",
+        database = "postgres",
+        user = "postgres",
+        password = "postgres")
 
-	if tab == 'general-info':
-		return html.Div(id='General',children=[
-			html.H2(children='Safety Ranking',style={'text-align': 'center'}),
-			html.Br(),
-			html.Div([
-				#builds graphs
-				dcc.Graph(
-					id='RankingofDistrict-graph', 
-					animate = True,
-					figure={
-						'data': [
-							{'x': df_Districts['district'], 'y': df_Districts['counts'], 'type': 'bar', 'name': 'DistrictsRanking'},
-						],
-						'layout': {
-							'plot_bgcolor': colors['background'],
-                			'paper_bgcolor': colors['background'],
-							'hovermode': 'closest',
-							'title': 'Ranking for Districts',
-							'font': {
-                    		'color': colors['text']
-                    		}
-						}
-					}
-				)
-			]),
+    cur = con.cursor()
 
-			html.Br(),
+    if dropdown is not None:
+        city = '"' + str(dropdown) + '"'
+        df = pd.read_sql("SELECT * FROM " + city, con)
+        df_Districts = ps.sqldf(df_query('district'),locals()).sort_values(by=['counts'])
+        df_Day = ps.sqldf(df_query('dayofweek'),locals())
+    	#sorter = [ 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    	#sorterIndex = dict(zip(sorter,range(len(sorter))))
+    	#df_Day['Day_id'] = df_Day.index
+    	#df_Day['Day_id'] = df_Day['Day_id'].map(sorterIndex)
+        df_Day['Day_id'] = [4,0,5,6,3,1,2]
+        df_Day.sort_values('Day_id', inplace=True)
+        df_Month = ps.sqldf(df_query('month'),locals()).sort_values(by=['month'])
+        df_Month = df_Month[df_Month['month']<13]
+        df_Hour = ps.sqldf(df_query('hour'),locals()).sort_values(by=['hour'])
 
-			html.Div([
-				dcc.Graph(
-					id='RankingofDay-graph',
-					animate=True,
-					figure={
-						'data': [
-							{'x': df_Day.dayofweek, 'y': df_Day.counts, 'type': 'scatter', 'name': 'DayRankingDot'},
-                    	],
-                    	'layout': {
-                    		'hovermode': 'closest',
-                    		'title': 'Ranking for Day of Week',
-                    		'plot_bgcolor': colors['background'],
-                			'paper_bgcolor': colors['background'],
-                			'font': {
-                    		'color': colors['text']
-                    		}
-                     	}
-                    }
-                )
-            ]),
+        best_day = df_Day.sort_values(by = ['counts'])['dayofweek'][1]
+        best_month = df_Month.sort_values(by = ['counts'])['month'][1]
+        best_hour = df_Hour.sort_values(by = ['counts'])['hour'][1]
 
-            html.Br(),
+        city_full = '"' + str(dropdown) + '_full"'
+        dist = df_Districts['district'][1]
+        df_full = pd.read_sql("SELECT date, longitude, latitude FROM " + city_full + " WHERE pddistrict = '" + dist + "'", con)
+    	#df_full['tag'] = np.where(df_full['pddistrict']== dist, 1, 0)
 
-			html.Div([
-				dcc.Graph(
-					id='RankingofMonth-graph',
-					animate=True,
-					figure={
-						'data': [
-							{'x': df_Month.month, 'y': df_Month.counts, 'type': 'bar', 'name': 'MonthRanking'},
-                     	],
-                    	'layout': {
-                    		'hovermode': 'closest',
-                    		'title': 'Ranking for Months',
-                    		'plot_bgcolor': colors['background'],
-                			'paper_bgcolor': colors['background'],
-                			'font': {
-                    		'color': colors['text']
-                    		}
-                    	}
-                    }
-                )
-            ]),
+        if tab == 'general-info':
+            return html.Div(id='General',children=[
+                html.H2(children='Safety Ranking',style={'text-align': 'center'}),
+                html.Br(),
+    			html.Div([
+    				#builds graphs
+    				dcc.Graph(
+    					id='RankingofDistrict-graph', 
+    					animate = True,
+    					figure={
+    						'data': [{'x': df_Districts['district'], 'y': df_Districts['counts'], 'type': 'bar', 'name': 'DistrictsRanking'},],
+    						'layout': {
+    							'plot_bgcolor': colors['background'],
+                    			'paper_bgcolor': colors['background'],
+    							'hovermode': 'closest',
+    							'title': 'Ranking for Districts',
+    							'font': {
+                                    'color': colors['text']
+                        		}
+    						}
+    					}
+    				)
+    			]),
+                html.Br(),
 
-            html.Br(),
+                html.Label('From the plot above, we recommand you choose the city with the least recorded crimes'),
+    			
+                html.Br(),
+                html.Br(),
 
-			html.Div([
-				dcc.Graph(
-					id='RankingofHour-graph',
-					animate=True,
-					figure={
-						'data': [
-							{'x': df_Hour.hour, 'y': df_Hour.counts, 'type': 'scatter', 'name': 'HourRanking'},
-                     	],
-                     	'layout': {
-                     		'hovermode': 'closest',
-                    		'title': 'Ranking for Hours',
-                    		'plot_bgcolor': colors['background'],
-                			'paper_bgcolor': colors['background'],
-                			'font': {
-                    		'color': colors['text']
-                    		}
-                    	}
-                    }
-                )
-            ]),
-		])
+    			html.Div([
+    				dcc.Graph(
+    					id='RankingofDay-graph',
+    					animate=True,
+    					figure={
+    						'data': [{'x': df_Day.dayofweek, 'y': df_Day.counts, 'type': 'scatter', 'name': 'DayRankingDot'},],
+                        	'layout': {
+                        		'hovermode': 'closest',
+                        		'title': 'Ranking for Day of Week',
+                        		'plot_bgcolor': colors['background'],
+                    			'paper_bgcolor': colors['background'],
+                    			'font': {
+                                    'color': colors['text']
+                        		}
+                         	}
+                        }
+                    )
+                ]),
 
-     	#building the Map tab
-    # elif tab == 'map':
-    # 	return {'data':[go.Scattergeo(
-    # 				lon = df_full['Long'],
-    # 				lat = df_full['Lat'],
-    # 				text = df_full['district'],
-    # 				mode = 'markers',
-    # 				marker_color = df_full['tag']),],
-    # 			'layout':{go.Layout(title='Map',
-    # 				geo_scope='usa')}}
-#             	html.Br(),
-#             	html.H2(children='Top React Native Posts Discussing all Three Technologies',style={'text-align': 'center'}),
-#             	dash_table.DataTable(
-#                     	style_data={'whiteSpace': 'normal'},
-#                     	css=[{'selector': '.dash-cell div.dash-cell-value', 'rule': 'display: inline; white-space: inherit; overflow: inherit; text-overflow: inherit;'}],
-#                 	id='react-native-cross-table',
-#                 	columns=[{'name':"mentions", 'id':'total_link_id_count'},{'name':"Title", 'id':'title'},{'name':'url','id':'full_link'}],
-#                 	data=df_react_native_cross_posts_full.to_dict("rows"),
-#             	),
-#             	html.Br(),
-#             	html.H2(children='Top Flutter Posts Discussing all Three Technologies',style={'text-align': 'center'}),
-#             	dash_table.DataTable(
-#                     	style_data={'whiteSpace': 'normal'},
-#                     	css=[{'selector': '.dash-cell div.dash-cell-value', 'rule': 'display: inline; white-space: inherit; overflow: inherit; text-overflow: inherit;'}],
-#                 	id='flutter-cross-table',
-#                 	columns=[{'name':"mentions", 'id':'total_link_id_count'},{'name':"Title", 'id':'title'},{'name':'url','id':'full_link'}],
-#                 	data=df_flutter_cross_posts_full.to_dict("rows")
-#             	)]            
-#         	)
-    
-#     	#the third search tab with update logic found lower
-#     	elif tab == 'topic-search':
-#         	return html.Div(children=[
-#             	html.H5(children='Search for related technologies (example: seaborn, plotly, and ggplot)'),
-#             	html.Div(dcc.Input(id='input-box-1', type='text')),
-#             	html.Div(dcc.Input(id='input-box-2', type='text')),
-#             	html.Div(dcc.Input(id='input-box-3', type='text')),
-#             	html.Button('Submit', id='button'),
-#             	html.Div(children='Enter a value and press submit'),
+                html.Br(),
 
-#             	html.Div(id='search-graph-and-table-container')
-#         	])
-            
+                html.Label('We recommand you to take travel on ' + best_day),
+                
+                html.Br(),
+                html.Br(),
 
-#@app.callback(
-#   dash.dependencies.Output('HackerNews-hover-text', 'children'),
-#  [dash.dependencies.Input('HackerNews-graph', 'hoverData')])
+    			html.Div([
+    				dcc.Graph(
+    					id='RankingofMonth-graph',
+    					animate=True,
+    					figure={
+    						'data': [{'x': df_Month.month, 'y': df_Month.counts, 'type': 'bar', 'name': 'MonthRanking'},],
+                        	'layout': {
+                        		'hovermode': 'closest',
+                        		'title': 'Ranking for Months',
+                        		'plot_bgcolor': colors['background'],
+                    			'paper_bgcolor': colors['background'],
+                    			'font': {
+                                    'color': colors['text']
+                        		}
+                        	}
+                        }
+                    )
+                ]),
+
+                html.Br(),
+
+                html.Label('We recommand you to take travel on month ' + str(best_month)),
+                
+                html.Br(),
+                html.Br(),
+
+    			html.Div([
+    				dcc.Graph(
+    					id='RankingofHour-graph',
+    					animate=True,
+    					figure={
+    						'data': [{'x': df_Hour.hour, 'y': df_Hour.counts, 'type': 'scatter', 'name': 'HourRanking'},],
+                         	'layout': {
+                         		'hovermode': 'closest',
+                        		'title': 'Ranking for Hours',
+                        		'plot_bgcolor': colors['background'],
+                    			'paper_bgcolor': colors['background'],
+                    			'font': {
+                                    'color': colors['text']
+                        		}
+                        	}
+                        }
+                    )
+                ]),
+
+                html.Br(),
+
+                html.Label(str(best_hour) + " o'clock is the safest time in this city")
+    		])
+
+    #building the Prediction tab
+        elif tab == 'prediction':
+            pre_table = '"' + dropdown + "_Pre" + '"'
+            train_table = '"' + dropdown + "_Train" + '"'
+            df_train = pd.read_sql("SELECT * FROM " + train_table, con)
+            df_pre = pd.read_sql("SELECT * FROM " + pre_table, con)
+
+            return html.Div(id='Prediciton',children=[
+                    html.H2(children='Crime Trends in the Past and Future',style={'text-align': 'center'}),
+                    html.Br(),
+                    html.Div([
+                        #builds graphs
+                        dcc.Graph(
+                            id='Past-graph', 
+                            animate = True,
+                            figure={
+                                'data': [{'x': df_train['date'], 'y': df_train['count'], 'type': 'line', 'name': 'Past'},],
+                                'layout': {
+                                    'plot_bgcolor': colors['background'],
+                                    'paper_bgcolor': colors['background'],
+                                    'hovermode': 'closest',
+                                    'title': 'Past Crime Trends',
+                                    'font': {
+                                        'color': colors['text']
+                                    }
+                                }
+                            }
+                        )
+                    ]),
+                    html.Br(),
+
+                html.Div([
+                    dcc.Graph(
+                        id='Future-graph',
+                        animate=True,
+                        figure={
+                            'data': [{'x': df_pre['date'], 'y': df_pre['count'], 'type': 'line', 'name': 'Future'},],
+                            'layout': {
+                                'hovermode': 'closest',
+                                'title': 'Crime Trends for Next 3 Months',
+                                'plot_bgcolor': colors['background'],
+                                'paper_bgcolor': colors['background'],
+                                'font': {
+                                    'color': colors['text']
+                                }
+                            }
+                        }
+                    )
+                ]),
+            ])
+
+
+    #close the SQL 
+    con.close()        
+
 
 if __name__  == '__main__':
-	app.run_server(debug=True)
+    app.run_server(debug=True)
 
 
 
